@@ -1,0 +1,57 @@
+#!/bin/bash
+
+set -e # exit immediately if a simple command exits with a non-zero status
+set -u # report the usage of uninitialized variables
+
+source /var/vcap/jobs/riemann/helpers/ctl_utils.sh
+
+RUN_DIR=/var/vcap/sys/run/riemann
+LOG_DIR=/var/vcap/sys/log/riemann
+PIDFILE=$RUN_DIR/riemann.pid
+
+export LANG=en_US.UTF-8
+export PATH=/var/vcap/packages/java/bin:$PATH
+export JAVA_HOME="/var/vcap/packages/java"
+
+case $1 in
+
+  start)
+    pid_guard $PIDFILE riemann
+
+    # increasing the open files limits
+    ulimit -n 64000
+
+    mkdir -p $RUN_DIR
+    chown -R vcap:vcap $RUN_DIR
+
+    mkdir -p $LOG_DIR
+    chown -R vcap:vcap $LOG_DIR
+
+    echo $$ > $PIDFILE
+
+    # /tmp must have exec to prevent java.lang.UnsatisfiedLinkError when loading netty
+    if mountpoint -q /tmp; then
+      mount -o remount exec /tmp
+    fi
+
+    exec chpst -u vcap:vcap \
+      java -server -XX:+UseConcMarkSweepGC -XX:+UseParNewGC \
+      -XX:+CMSParallelRemarkEnabled -XX:+AggressiveOpts \
+      -XX:+UseFastAccessorMethods -XX:+UseCompressedOops \
+      -XX:+CMSClassUnloadingEnabled \
+      -jar /var/vcap/packages/riemann/lib/riemann.jar start \
+        /var/vcap/jobs/riemann/config/riemann.config
+
+    ;;
+
+  stop)
+    kill_and_wait $PIDFILE
+
+    ;;
+  *)
+    echo "Usage: riemann_ctl {start|stop}"
+
+    ;;
+
+esac
+exit 0

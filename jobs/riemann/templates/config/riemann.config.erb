@@ -1,0 +1,57 @@
+; -*- mode: clojure; -*-
+; vim: filetype=clojure
+
+(logging/init {:file "/var/vcap/sys/log/riemann/riemann.log"})
+
+; Listen on the local interface over TCP (5555), UDP (5555), and websockets
+; (5556)
+(let [host "0.0.0.0"]
+  (tcp-server {:host host})
+  (udp-server {:host host})
+  (ws-server  {:host host}))
+
+; Expire old events from the index every 5 seconds.
+(periodically-expire 5)
+
+(def special-fields
+  "A set of event fields in Riemann with special handling logic."
+  #{:host :service :time :metric :tags :ttl :description})
+
+(defn attribute-tags
+  "Generates a set of Datadog tags from a Riemann event's additional fields."
+  [event]
+  (-> event
+      (->> (remove (comp special-fields key))
+           (remove #(nil? (val %)))
+           (map #(str (name (key %)) ":" (val %))))))
+
+(let [index (index)]
+  ; Inbound events will be passed to these streams:
+  (streams
+    (default :ttl 60
+      ; Index all events immediately.
+      index
+
+<% if_p("riemann.datadog.api_key") do |key| %>
+      (adjust #(assoc % :tags (concat (:tags %) (attribute-tags %)))
+        (datadog {:api-key "<%= key %>"}))
+<% end %>
+
+<% if_p("riemann.influxdb.host") do |host| %>
+      (fn [event]
+        (let [tag-fields (conj (set (remove special-fields (keys event))) :host)
+              influx-with-tags
+                (influxdb {:host "<%= host %>"
+                           :version :<%= p("riemann.influxdb.version") %>
+                           :db "<%= p("riemann.influxdb.database") %>"
+                           :username "<%= p("riemann.influxdb.username") %>"
+                           :password "<%= p("riemann.influxdb.password") %>"
+                           :tag-fields tag-fields})]
+          (influx-with-tags event)))
+<% end %>
+
+<% p("riemann.custom_rules", []).each |rule| %><%= rule %><% end %>
+
+      ; Log expired events.
+      (expired
+        (fn [event] (info "expired" event))))))
